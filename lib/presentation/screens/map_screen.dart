@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'profile_screen.dart';
@@ -20,10 +20,12 @@ class MapScreen extends StatefulWidget {
   _MapScreenState createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMixin {
   final MapController _mapController = MapController();
   StreamSubscription<Position>? _positionStream;
   LatLng? _currentLocation;
+  late AnimationController _rippleController;
+  double _currentHeading = 0.0;
   
   String _mapUrl = '';
   bool _isSatellite = false;
@@ -33,6 +35,10 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+    _rippleController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    )..repeat();
     _initializeLocation();
   }
 
@@ -98,25 +104,25 @@ class _MapScreenState extends State<MapScreen> {
     
     if (kIsWeb) {
       locationSettings = const LocationSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 2,
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 1,
       );
     } else if (defaultTargetPlatform == TargetPlatform.android) {
       locationSettings = AndroidSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 2,
-        intervalDuration: const Duration(seconds: 4), // Update every 4 seconds in foreground
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 1,
+        intervalDuration: const Duration(seconds: 1), // Update every second in foreground for extreme precision
       );
     } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
       locationSettings = AppleSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 2,
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 1,
         activityType: ActivityType.other,
       );
     } else {
       locationSettings = const LocationSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 2,
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 1,
       );
     }
 
@@ -126,6 +132,7 @@ class _MapScreenState extends State<MapScreen> {
       if (mounted) {
         setState(() {
           _currentLocation = LatLng(position.latitude, position.longitude);
+          _currentHeading = position.heading;
         });
       }
     });
@@ -148,6 +155,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void dispose() {
     _positionStream?.cancel();
+    _rippleController.dispose();
     super.dispose();
   }
 
@@ -766,22 +774,78 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Widget _buildUserLocationMarker() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.blueAccent.withOpacity(0.2),
-        shape: BoxShape.circle,
-      ),
-      padding: const EdgeInsets.all(8),
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.blueAccent,
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 3),
-          boxShadow: [
-            const BoxShadow(color: Colors.black26, blurRadius: 8, spreadRadius: 2)
+    return AnimatedBuilder(
+      animation: _rippleController,
+      builder: (context, child) {
+        return Stack(
+          alignment: Alignment.center,
+          clipBehavior: Clip.none,
+          children: [
+            // Outer Pulsating Ripple Ring
+            Container(
+              width: 18 + 22 * _rippleController.value,
+              height: 18 + 22 * _rippleController.value,
+              decoration: BoxDecoration(
+                color: Colors.blueAccent.withOpacity(0.35 * (1.0 - _rippleController.value)),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: Colors.blueAccent.withOpacity(0.55 * (1.0 - _rippleController.value)),
+                  width: 1.5,
+                ),
+              ),
+            ),
+            // Inner Core Blue Dot with White Border
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                color: Colors.blueAccent,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.blueAccent.withOpacity(0.4),
+                    blurRadius: 6,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+            ),
+            // Direction Arrow / Heading Pointer
+            if (_currentHeading > 0.0)
+              Transform.rotate(
+                angle: _currentHeading * pi / 180,
+                child: Transform.translate(
+                  offset: const Offset(0, -11),
+                  child: ClipPath(
+                    clipper: DirectionPointerClipper(),
+                    child: Container(
+                      width: 9,
+                      height: 9,
+                      color: Colors.blueAccent,
+                    ),
+                  ),
+                ),
+              ),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
+}
+
+class DirectionPointerClipper extends CustomClipper<Path> {
+  @override
+  Path getClip(Size size) {
+    final path = Path();
+    path.moveTo(size.width / 2, 0);
+    path.lineTo(size.width, size.height);
+    path.lineTo(size.width / 2, size.height * 0.75);
+    path.lineTo(0, size.height);
+    path.close();
+    return path;
+  }
+
+  @override
+  bool shouldReclip(CustomClipper<Path> oldClipper) => false;
 }

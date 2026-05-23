@@ -60,9 +60,9 @@ void onStart(ServiceInstance service) async {
   
   if (Platform.isAndroid) {
     locationSettings = AndroidSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 15, // meters
-      intervalDuration: const Duration(seconds: 30), // Check every 30 seconds to optimize battery
+      accuracy: LocationAccuracy.best,
+      distanceFilter: 5, // meters
+      intervalDuration: const Duration(seconds: 5), // Check every 5 seconds for precise geofencing responses
       foregroundNotificationConfig: const ForegroundNotificationConfig(
         notificationText: "Monitoring silent zones in the background...",
         notificationTitle: "Smart Silent Map Active",
@@ -70,15 +70,15 @@ void onStart(ServiceInstance service) async {
     );
   } else if (Platform.isIOS || Platform.isMacOS) {
     locationSettings = AppleSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 15, // meters
-      activityType: ActivityType.fitness,
-      pauseLocationUpdatesAutomatically: true, // Auto-pause GPS when user is stationary to save battery
+      accuracy: LocationAccuracy.best,
+      distanceFilter: 5, // meters
+      activityType: ActivityType.other,
+      pauseLocationUpdatesAutomatically: false, // Keep updates steady for background accuracy
     );
   } else {
     locationSettings = const LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 15,
+      accuracy: LocationAccuracy.best,
+      distanceFilter: 5,
     );
   }
 
