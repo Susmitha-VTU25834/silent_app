@@ -40,7 +40,7 @@ class GeofenceZone {
     ZoneType zoneType;
     if (map['type'] is String) {
       zoneType = ZoneType.values.firstWhere(
-        (e) => e.name == map['type'],
+        (e) => e.toString().split('.').last == map['type'],
         orElse: () => ZoneType.polygon,
       );
     } else {

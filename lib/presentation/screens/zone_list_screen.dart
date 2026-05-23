@@ -124,26 +124,27 @@ class _ZoneListScreenState extends State<ZoneListScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(32),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                    child: Container(
-                      padding: const EdgeInsets.all(40),
-                      decoration: BoxDecoration(
-                        color: AppColors.surface.withOpacity(0.5),
-                        borderRadius: BorderRadius.circular(32),
-                        border: Border.all(color: AppColors.border.withOpacity(0.3), width: 1),
-                      ),
-                      child: Container(
-                        padding: const EdgeInsets.all(24),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppColors.primary.withOpacity(0.1),
-                        ),
-                        child: Icon(Icons.map_rounded, size: 64, color: AppColors.primary),
-                      ),
+                Container(
+                  padding: const EdgeInsets.all(40),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface.withOpacity(0.9),
+                    borderRadius: BorderRadius.circular(32),
+                    border: Border.all(color: AppColors.border.withOpacity(0.5), width: 1),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      )
+                    ],
+                  ),
+                  child: Container(
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppColors.primary.withOpacity(0.1),
                     ),
+                    child: Icon(Icons.map_rounded, size: 64, color: AppColors.primary),
                   ),
                 ),
                 const SizedBox(height: 32),
@@ -187,70 +188,64 @@ class _ZoneListScreenState extends State<ZoneListScreen> {
   Widget _buildZoneCard(BuildContext context, dynamic zone, GeofenceProvider provider) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16.0),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Container(
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surface.withOpacity(0.95),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppColors.border.withOpacity(0.5), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              spreadRadius: 1,
+            )
+          ],
+        ),
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          leading: Container(
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: AppColors.surface.withOpacity(0.7),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: AppColors.border.withOpacity(0.3), width: 1.5),
+              gradient: LinearGradient(
+                colors: [AppColors.primary, AppColors.secondary],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 10,
-                  spreadRadius: 1,
-                )
+                  color: AppColors.primary.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
               ],
             ),
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              leading: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [AppColors.primary, AppColors.secondary],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.primary.withOpacity(0.3),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
-              ),
-              title: Text(
-                zone.name,
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppColors.textPrimary),
-              ),
-              subtitle: Padding(
-                padding: const EdgeInsets.only(top: 6.0),
-                child: Text(
-                  '${zone.points.length} Geofence points • ${zone.type.name}',
-                  style: TextStyle(color: AppColors.textSecondary, fontWeight: FontWeight.w500),
-                ),
-              ),
-              trailing: IconButton(
-                icon: Icon(Icons.delete_outline_rounded, color: Colors.redAccent.withOpacity(0.8), size: 28),
-                onPressed: () {
-                  provider.deleteZone(zone.id);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Zone "${zone.name}" removed'),
-                      backgroundColor: AppColors.surface,
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                  );
-                },
-              ),
+            child: const Icon(Icons.location_on_rounded, color: Colors.white, size: 24),
+          ),
+          title: Text(
+            zone.name,
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: AppColors.textPrimary),
+          ),
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 6.0),
+            child: Text(
+              '${zone.points.length} Geofence points • ${zone.type.toString().split('.').last}',
+              style: TextStyle(color: AppColors.textSecondary, fontWeight: FontWeight.w500),
             ),
+          ),
+          trailing: IconButton(
+            icon: Icon(Icons.delete_outline_rounded, color: Colors.redAccent.withOpacity(0.8), size: 28),
+            onPressed: () {
+              provider.deleteZone(zone.id);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Zone "${zone.name}" removed'),
+                  backgroundColor: AppColors.surface,
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              );
+            },
           ),
         ),
       ),

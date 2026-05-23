@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ui';
+import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -47,15 +48,42 @@ Future<void> initializeBackgroundService() async {
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
 
+  if (service is AndroidServiceInstance) {
+    service.setAsForegroundService();
+  }
+
   const MethodChannel _nativeChannel = MethodChannel('com.antigravity.smart_silent_map/silent_mode');
   bool lastStateInside = false;
 
-  // Battery Optimization: Only check every 10 meters of movement
-  final positionStream = Geolocator.getPositionStream(
-    locationSettings: const LocationSettings(
+  // Battery & Accuracy Optimization: Use platform-specific settings to reduce GPS polling
+  late final LocationSettings locationSettings;
+  
+  if (Platform.isAndroid) {
+    locationSettings = AndroidSettings(
       accuracy: LocationAccuracy.high,
-      distanceFilter: 10, // meters
-    ),
+      distanceFilter: 15, // meters
+      intervalDuration: const Duration(seconds: 30), // Check every 30 seconds to optimize battery
+      foregroundNotificationConfig: const ForegroundNotificationConfig(
+        notificationText: "Monitoring silent zones in the background...",
+        notificationTitle: "Smart Silent Map Active",
+      ),
+    );
+  } else if (Platform.isIOS || Platform.isMacOS) {
+    locationSettings = AppleSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 15, // meters
+      activityType: ActivityType.fitness,
+      pauseLocationUpdatesAutomatically: true, // Auto-pause GPS when user is stationary to save battery
+    );
+  } else {
+    locationSettings = const LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 15,
+    );
+  }
+
+  final positionStream = Geolocator.getPositionStream(
+    locationSettings: locationSettings,
   );
 
   await for (final position in positionStream) {

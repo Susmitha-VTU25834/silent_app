@@ -11,14 +11,13 @@ import 'presentation/screens/map_screen.dart';
 import 'presentation/screens/zone_list_screen.dart';
 import 'presentation/theme/design_system.dart';
 import 'services/background_location_service.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 
-void main() async {
+import 'presentation/widgets/fast_page_route.dart';
+
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize Background Service (Only for native)
-  if (!kIsWeb) {
-    await initializeBackgroundService();
-  }
 
   runApp(
     MultiProvider(
@@ -33,6 +32,43 @@ void main() async {
       child: MyApp(),
     ),
   );
+
+  // Initialize Firebase and background services asynchronously to prevent blocking startup
+  _initializeAsyncServices();
+}
+
+Future<void> startBackgroundServiceIfPermitted() async {
+  if (kIsWeb) return;
+  try {
+    var locationStatus = await Permission.locationAlways.status;
+    bool hasDnd = false;
+    try {
+      hasDnd = await const MethodChannel('com.antigravity.smart_silent_map/silent_mode')
+          .invokeMethod('checkDndPermission');
+    } catch (e) {
+      print('Native DND check error: $e');
+    }
+    if (locationStatus.isGranted && hasDnd) {
+      await initializeBackgroundService();
+      print("✅ Background location service started successfully.");
+    } else {
+      print("⚠️ Background location service not started: Permissions not fully granted yet.");
+    }
+  } catch (e) {
+    print("Background service startup check error: $e");
+  }
+}
+
+Future<void> _initializeAsyncServices() async {
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    print("Firebase initialization error (did you run flutterfire configure?): $e");
+  }
+  
+  await startBackgroundServiceIfPermitted();
 }
 
 class MyApp extends StatelessWidget {
@@ -72,8 +108,14 @@ class MyApp extends StatelessWidget {
               return AuthScreen();
             },
           ),
-          routes: {
-            '/zones': (context) => ZoneListScreen(),
+          onGenerateRoute: (settings) {
+            if (settings.name == '/zones') {
+              return FastPageRoute(
+                child: ZoneListScreen(),
+                settings: settings,
+              );
+            }
+            return null;
           },
         );
       },
@@ -123,7 +165,20 @@ class _PermissionWrapperState extends State<PermissionWrapper> with WidgetsBindi
       return;
     }
 
-    // Check Location
+    // Request Foreground Location first (required on Android 10+ before background location)
+    var foregroundStatus = await Permission.location.status;
+    if (!foregroundStatus.isGranted) {
+      foregroundStatus = await Permission.location.request();
+      if (!foregroundStatus.isGranted) {
+        setState(() {
+          _hasPermissions = false;
+          _isLoading = false;
+        });
+        return;
+      }
+    }
+
+    // Request Background Location (Always allow)
     var locationStatus = await Permission.locationAlways.status;
     if (!locationStatus.isGranted) {
       locationStatus = await Permission.locationAlways.request();
@@ -145,8 +200,13 @@ class _PermissionWrapperState extends State<PermissionWrapper> with WidgetsBindi
       }
     }
 
+    final bool isGranted = locationStatus.isGranted && hasDnd;
+    if (isGranted) {
+      await startBackgroundServiceIfPermitted();
+    }
+
     setState(() {
-      _hasPermissions = locationStatus.isGranted && hasDnd;
+      _hasPermissions = isGranted;
       _isLoading = false;
     });
   }

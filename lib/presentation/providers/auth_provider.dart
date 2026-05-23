@@ -3,20 +3,32 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 class AuthProvider with ChangeNotifier {
   String? _token;
   String? _userId;
   String? _name;
   String? _email;
+
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    clientId: '842784249407-lpti9qb3ctsa2fu2p2uc1us1hbqvej90.apps.googleusercontent.com',
+    scopes: ['email', 'profile'],
+  );
   
-  // Dynamic URL detection
+  // Toggle to switch between local Wi-Fi testing and public cloud deployment
+  static const bool isProduction = true;
+  static const String prodUrl = "https://silent-app.onrender.com/api/auth";
+  static const String localUrl = "http://10.0.2.2:3000/api/auth";
+
   static String get baseUrl {
+    if (isProduction) {
+      return prodUrl;
+    }
     if (kIsWeb) {
       return "http://localhost:3000/api/auth";
     } else {
-      // Use your PC's actual LAN IP for physical device testing instead of 10.0.2.2 (Emulator only)
-      return "http://192.168.31.75:3000/api/auth";
+      return localUrl;
     }
   }
 
@@ -38,21 +50,120 @@ class AuthProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> signup(String name, String email, String password) async {
+  Future<Map<String, dynamic>> sendOtp(String email) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/send-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'email': email}),
+      );
+      final responseData = json.decode(response.body);
+      if (response.statusCode == 200) {
+        return {
+          'success': true,
+          'otp': responseData['otp'],
+          'message': responseData['message'] ?? 'OTP sent successfully',
+        };
+      } else {
+        return {
+          'success': false,
+          'message': responseData['error'] ?? 'Failed to send OTP',
+        };
+      }
+    } catch (e) {
+      print("Send OTP Connection Error: $e");
+      return {
+        'success': false,
+        'message': 'Connection error occurred. Please try again.',
+      };
+    }
+  }
+
+  Future<Map<String, dynamic>> signup(String name, String email, String password, String otp) async {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/signup'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'name': name, 'email': email, 'password': password}),
+        body: json.encode({
+          'name': name,
+          'email': email,
+          'password': password,
+          'otp': otp,
+        }),
       );
+      final responseData = json.decode(response.body);
       if (response.statusCode == 201) {
-        return login(email, password);
+        final loginSuccess = await login(email, password);
+        return {
+          'success': loginSuccess,
+          'message': 'Signup successful!',
+        };
       } else {
         print("Signup Failed: HTTP ${response.statusCode} - ${response.body}");
-        return false;
+        return {
+          'success': false,
+          'message': responseData['error'] ?? 'Signup failed',
+        };
       }
     } catch (e) {
       print("Signup Connection Error: $e");
+      return {
+        'success': false,
+        'message': 'Connection error occurred. Please try again.',
+      };
+    }
+  }
+
+  Future<bool> loginWithGoogle() async {
+    try {
+      // Trigger Google Sign-In flow
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        print("Google Sign-In aborted by user.");
+        return false;
+      }
+
+      // Obtain authentication details from request
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final String? idToken = googleAuth.idToken;
+
+      if (idToken == null) {
+        print("Google Sign-In failed: idToken is null.");
+        return false;
+      }
+
+      // Send idToken to our backend
+      final response = await http.post(
+        Uri.parse('$baseUrl/google'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'idToken': idToken,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        _token = responseData['token'];
+        _userId = responseData['userId'];
+        _name = responseData['name'];
+        _email = responseData['email'];
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('userData', json.encode({
+          'token': _token,
+          'userId': _userId,
+          'name': _name,
+          'email': _email,
+        }));
+
+        notifyListeners();
+        return true;
+      } else {
+        print("Google Auth Failed on Backend: HTTP ${response.statusCode} - ${response.body}");
+        return false;
+      }
+    } catch (e) {
+      print("Google Sign-In Connection/OAuth Error: $e");
       return false;
     }
   }

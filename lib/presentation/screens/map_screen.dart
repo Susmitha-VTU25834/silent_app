@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
@@ -11,6 +13,7 @@ import 'profile_screen.dart';
 import '../providers/geofence_provider.dart';
 import '../theme/design_system.dart';
 import '../../domain/models/geofence_zone.dart';
+import '../widgets/fast_page_route.dart';
 
 class MapScreen extends StatefulWidget {
   @override
@@ -25,6 +28,7 @@ class _MapScreenState extends State<MapScreen> {
   String _mapUrl = '';
   bool _isSatellite = false;
   int _maxNativeZoom = 19;
+  DateTime? _lastAddPointTime;
 
   @override
   void initState() {
@@ -90,11 +94,34 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _startLocationStream() {
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
+    late final LocationSettings locationSettings;
+    
+    if (kIsWeb) {
+      locationSettings = const LocationSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: 2,
-      ),
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
+      locationSettings = AndroidSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 2,
+        intervalDuration: const Duration(seconds: 4), // Update every 4 seconds in foreground
+      );
+    } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
+      locationSettings = AppleSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 2,
+        activityType: ActivityType.other,
+      );
+    } else {
+      locationSettings = const LocationSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 2,
+      );
+    }
+
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: locationSettings,
     ).listen((Position position) {
       if (mounted) {
         setState(() {
@@ -112,9 +139,7 @@ class _MapScreenState extends State<MapScreen> {
         _mapUrl = 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}';
         _maxNativeZoom = 19; 
       } else {
-        _mapUrl = AppThemeMode.isDark 
-          ? 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png'
-          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
+        _mapUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
         _maxNativeZoom = 19;
       }
     });
@@ -130,20 +155,69 @@ class _MapScreenState extends State<MapScreen> {
     final hasPermission = await _handleLocationPermission();
     if (!hasPermission) return;
 
+    // 1. If we already have a stream-updated location, use it instantly!
+    if (_currentLocation != null) {
+      _moveMapToLatLng(_currentLocation!);
+      return;
+    }
+
     try {
+      // 2. Otherwise, check last known position (near-instant)
+      final lastPosition = await Geolocator.getLastKnownPosition();
+      if (lastPosition != null) {
+        final latLng = LatLng(lastPosition.latitude, lastPosition.longitude);
+        _moveMapToLatLng(latLng);
+        if (mounted) {
+          setState(() {
+            _currentLocation = latLng;
+          });
+        }
+        return;
+      }
+
+      // 3. Fallback to a fast current position lookup
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
+        desiredAccuracy: LocationAccuracy.low,
+        timeLimit: const Duration(seconds: 2),
       );
-      _mapController.move(
-        LatLng(position.latitude, position.longitude),
-        15.0,
-      );
-      setState(() {
-        _currentLocation = LatLng(position.latitude, position.longitude);
-      });
+      final latLng = LatLng(position.latitude, position.longitude);
+      _moveMapToLatLng(latLng);
+      if (mounted) {
+        setState(() {
+          _currentLocation = latLng;
+        });
+      }
     } catch (e) {
       debugPrint("Error centering map: $e");
+      // Ultimate fallback: if everything fails, try lowest accuracy quickly
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.lowest,
+          timeLimit: const Duration(seconds: 1),
+        );
+        final latLng = LatLng(position.latitude, position.longitude);
+        _moveMapToLatLng(latLng);
+        if (mounted) {
+          setState(() {
+            _currentLocation = latLng;
+          });
+        }
+      } catch (_) {}
     }
+  }
+
+  void _moveMapToLatLng(LatLng target) {
+    double targetZoom = 13.5;
+    try {
+      final currentZoom = _mapController.camera.zoom;
+      if (currentZoom >= 13.0) {
+        targetZoom = currentZoom;
+      }
+    } catch (_) {
+      // Fallback if camera state is not yet initialized
+    }
+
+    _mapController.move(target, targetZoom);
   }
 
   void _showSaveDialog() {
@@ -194,208 +268,228 @@ class _MapScreenState extends State<MapScreen> {
       _mapUrl = 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
       _maxNativeZoom = 18; // Use pure satellite which has deeper coverage
     } else {
-      _mapUrl = AppThemeMode.isDark 
-          ? 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png'
-          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
+      _mapUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
       _maxNativeZoom = 19;
     }
 
     return Scaffold(
-      body: Consumer<GeofenceProvider>(
-        builder: (context, provider, child) {
-          return Stack(
-            children: [
-              FlutterMap(
-                mapController: _mapController,
-                options: MapOptions(
-                  initialCenter: LatLng(37.7749, -122.4194),
-                  initialZoom: 13.0,
-                  maxZoom: 22.0, // Increased to allow extreme close-up zoom
-                  interactionOptions: const InteractionOptions(
-                    flags: InteractiveFlag.drag | 
-                           InteractiveFlag.pinchZoom | 
-                           InteractiveFlag.doubleTapZoom | 
-                           InteractiveFlag.scrollWheelZoom,
-                  ),
-                  onTap: (tapPosition, point) {
-                    if (provider.isDrawing) {
-                      provider.addPoint(point);
-                    }
-                  },
-                ),
-                children: [
-                  TileLayer(
-                    urlTemplate: _mapUrl,
-                    userAgentPackageName: 'com.antigravity.smart_silent_map',
-                    subdomains: const ['a', 'b', 'c'],
-                    maxZoom: 22.0,
-                    maxNativeZoom: _maxNativeZoom,
-                  ),
-                  CircleLayer(
-                    circles: [
-                      ...provider.zones
-                          .where((z) => z.type == ZoneType.circle && z.points.isNotEmpty)
-                          .map((z) => CircleMarker(
-                                point: z.points[0],
-                                radius: z.radius ?? 200.0,
-                                useRadiusInMeter: true,
-                                color: AppColors.primary.withOpacity(0.3),
-                                borderColor: AppColors.primary,
-                                borderStrokeWidth: 3,
-                              )),
-                      if (provider.isDrawing && provider.drawingMode == ZoneType.circle && provider.currentDrawingPoints.isNotEmpty)
-                        CircleMarker(
-                          point: provider.currentDrawingPoints[0],
-                          radius: provider.currentRadius,
-                          useRadiusInMeter: true,
-                          color: AppColors.secondary.withOpacity(0.3),
-                          borderColor: AppColors.secondary,
-                          borderStrokeWidth: 3,
-                        ),
-                    ],
-                  ),
-                  PolygonLayer(
-                    polygons: [
-                      ...provider.zones
-                          .where((z) => z.type == ZoneType.polygon && z.points.length >= 3)
-                          .map((zone) => Polygon(
-                                points: zone.points,
-                                color: AppColors.primary.withOpacity(0.3),
-                                borderColor: AppColors.primary,
-                                borderStrokeWidth: 3,
-                                isFilled: true,
-                              )),
-                      if (provider.isDrawing && provider.drawingMode == ZoneType.polygon && provider.currentDrawingPoints.isNotEmpty)
-                        Polygon(
-                          points: provider.currentDrawingPoints,
-                          color: AppColors.secondary.withOpacity(0.3),
-                          borderColor: AppColors.secondary,
-                          borderStrokeWidth: 3,
-                          isFilled: true,
-                        ),
-                    ],
-                  ),
-                  PolylineLayer(
-                    polylines: [
-                      if (provider.isDrawing && provider.drawingMode == ZoneType.polygon)
-                        Polyline(
-                          points: provider.currentDrawingPoints,
-                          color: AppColors.secondary,
-                          strokeWidth: 4,
-                          strokeCap: StrokeCap.round,
-                          strokeJoin: StrokeJoin.round,
-                        ),
-                    ],
-                  ),
-                  MarkerLayer(
-                    markers: [
-                      // User Location Pointer
-                      if (_currentLocation != null)
-                        Marker(
-                          point: _currentLocation!,
-                          width: 40,
-                          height: 40,
-                          child: _buildUserLocationMarker(),
-                        ),
-                      // Drawing Points Markers
-                      ...provider.currentDrawingPoints.map((p) => Marker(
-                            point: p,
-                            width: 8,
-                            height: 8,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                                boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4)],
-                              ),
-                            ),
-                          )),
-                    ],
-                  ),
-                ],
+      body: Stack(
+        children: [
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: LatLng(37.7749, -122.4194),
+              initialZoom: 13.0,
+              maxZoom: 22.0, // Increased to allow extreme close-up zoom
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.drag | 
+                       InteractiveFlag.pinchZoom | 
+                       InteractiveFlag.doubleTapZoom | 
+                       InteractiveFlag.scrollWheelZoom,
               ),
-              if (provider.isDrawing)
-                GestureDetector(
-                  onPanStart: (details) => provider.clearDrawing(),
-                  onPanUpdate: (details) {
+              onTap: (tapPosition, point) {
+                final provider = Provider.of<GeofenceProvider>(context, listen: false);
+                if (provider.isDrawing) {
+                  provider.addPoint(point);
+                }
+              },
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: _mapUrl,
+                userAgentPackageName: 'com.antigravity.smart_silent_map',
+                subdomains: const ['a', 'b', 'c'],
+                maxZoom: 22.0,
+                maxNativeZoom: _maxNativeZoom,
+                tileProvider: CancellableNetworkTileProvider(),
+              ),
+              Consumer<GeofenceProvider>(
+                builder: (context, provider, _) => CircleLayer(
+                  circles: [
+                    ...provider.zones
+                        .where((z) => z.type == ZoneType.circle && z.points.isNotEmpty)
+                        .map((z) => CircleMarker(
+                              point: z.points[0],
+                              radius: z.radius ?? 200.0,
+                              useRadiusInMeter: true,
+                              color: AppColors.primary.withOpacity(0.3),
+                              borderColor: AppColors.primary,
+                              borderStrokeWidth: 3,
+                            )),
+                    if (provider.isDrawing && provider.drawingMode == ZoneType.circle && provider.currentDrawingPoints.isNotEmpty)
+                      CircleMarker(
+                        point: provider.currentDrawingPoints[0],
+                        radius: provider.currentRadius,
+                        useRadiusInMeter: true,
+                        color: AppColors.secondary.withOpacity(0.3),
+                        borderColor: AppColors.secondary,
+                        borderStrokeWidth: 3,
+                      ),
+                  ],
+                ),
+              ),
+              Consumer<GeofenceProvider>(
+                builder: (context, provider, _) => PolygonLayer(
+                  polygons: [
+                    ...provider.zones
+                        .where((z) => z.type == ZoneType.polygon && z.points.length >= 3)
+                        .map((zone) => Polygon(
+                              points: zone.points,
+                              color: AppColors.primary.withOpacity(0.3),
+                              borderColor: AppColors.primary,
+                              borderStrokeWidth: 3,
+                              isFilled: true,
+                            )),
+                    if (provider.isDrawing && provider.drawingMode == ZoneType.polygon && provider.currentDrawingPoints.isNotEmpty)
+                      Polygon(
+                        points: provider.currentDrawingPoints,
+                        color: AppColors.secondary.withOpacity(0.3),
+                        borderColor: AppColors.secondary,
+                        borderStrokeWidth: 3,
+                        isFilled: true,
+                      ),
+                  ],
+                ),
+              ),
+              Consumer<GeofenceProvider>(
+                builder: (context, provider, _) => PolylineLayer(
+                  polylines: [
+                    if (provider.isDrawing && provider.drawingMode == ZoneType.polygon)
+                      Polyline(
+                        points: provider.currentDrawingPoints,
+                        color: AppColors.secondary,
+                        strokeWidth: 4,
+                        strokeCap: StrokeCap.round,
+                        strokeJoin: StrokeJoin.round,
+                      ),
+                  ],
+                ),
+              ),
+              Consumer<GeofenceProvider>(
+                builder: (context, provider, _) => MarkerLayer(
+                  markers: [
+                    // User Location Pointer
+                    if (_currentLocation != null)
+                      Marker(
+                        point: _currentLocation!,
+                        width: 40,
+                        height: 40,
+                        child: _buildUserLocationMarker(),
+                      ),
+                    // Drawing Points Markers
+                    ...provider.currentDrawingPoints.map((p) => Marker(
+                          point: p,
+                          width: 8,
+                          height: 8,
+                          child: Container(
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                            ),
+                          ),
+                        )),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          Selector<GeofenceProvider, bool>(
+            selector: (context, p) => p.isDrawing,
+            builder: (context, isDrawing, _) {
+              if (!isDrawing) return const SizedBox.shrink();
+              return GestureDetector(
+                onPanStart: (details) {
+                  _lastAddPointTime = null;
+                  Provider.of<GeofenceProvider>(context, listen: false).clearDrawing();
+                },
+                onPanUpdate: (details) {
+                  final now = DateTime.now();
+                  if (_lastAddPointTime == null || 
+                      now.difference(_lastAddPointTime!) > const Duration(milliseconds: 100)) {
                     final point = _mapController.camera.pointToLatLng(
                       Point(details.localPosition.dx, details.localPosition.dy),
                     );
-                    provider.addPoint(point);
-                  },
-                  onPanEnd: (details) {
-                    if (provider.drawingMode == ZoneType.circle) _showSaveDialog();
-                  },
-                  child: Container(
-                    color: Colors.transparent,
-                    width: double.infinity,
-                    height: double.infinity,
-                  ),
+                    Provider.of<GeofenceProvider>(context, listen: false).addPoint(point);
+                    _lastAddPointTime = now;
+                  }
+                },
+                onPanEnd: (details) {
+                  final provider = Provider.of<GeofenceProvider>(context, listen: false);
+                  if (provider.drawingMode == ZoneType.circle) _showSaveDialog();
+                },
+                child: Container(
+                  color: Colors.transparent,
+                  width: double.infinity,
+                  height: double.infinity,
                 ),
-              // Top Header
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                    child: _buildTopHeader(context),
-                  ),
-                ),
+              );
+            },
+          ),
+          // Top Header
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                child: _buildTopHeader(context),
               ),
-              // Right Action Buttons
-              Align(
-                alignment: Alignment.centerRight,
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 16.0),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _buildZoomButton(
-                        _isSatellite ? Icons.map_rounded : Icons.satellite_alt_rounded, 
-                        _toggleMapStyle
-                      ),
-                      SizedBox(height: 12),
-                      _buildZoomButton(Icons.person_outline_rounded, () {
-                        Navigator.push(context, MaterialPageRoute(builder: (context) => ProfileScreen()));
-                      }),
-                      SizedBox(height: 12),
-                      _buildZoomButton(Icons.my_location_rounded, _centerMapOnUser),
-                      SizedBox(height: 12),
-                      _buildZoomButton(Icons.add, () {
-                        final zoom = _mapController.camera.zoom + 1;
-                        _mapController.move(_mapController.camera.center, zoom);
-                      }),
-                      SizedBox(height: 12),
-                      _buildZoomButton(Icons.remove, () {
-                        final zoom = _mapController.camera.zoom - 1;
-                        _mapController.move(_mapController.camera.center, zoom);
-                      }),
-                    ],
+            ),
+          ),
+          // Right Action Buttons
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.only(right: 16.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildZoomButton(
+                    _isSatellite ? Icons.map_rounded : Icons.satellite_alt_rounded, 
+                    _toggleMapStyle
                   ),
-                ),
+                  const SizedBox(height: 12),
+                  _buildZoomButton(Icons.person_outline_rounded, () {
+                    Navigator.push(context, FastPageRoute(child: ProfileScreen()));
+                  }),
+                  const SizedBox(height: 12),
+                  _buildZoomButton(Icons.my_location_rounded, _centerMapOnUser),
+                  const SizedBox(height: 12),
+                  _buildZoomButton(Icons.add, () {
+                    final zoom = _mapController.camera.zoom + 1;
+                    _mapController.move(_mapController.camera.center, zoom);
+                  }),
+                  const SizedBox(height: 12),
+                  _buildZoomButton(Icons.remove, () {
+                    final zoom = _mapController.camera.zoom - 1;
+                    _mapController.move(_mapController.camera.center, zoom);
+                  }),
+                ],
               ),
-              // Bottom Controls
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: 450),
-                        child: _buildControls(provider),
-                      ),
+            ),
+          ),
+          // Bottom Controls
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 450),
+                    child: Consumer<GeofenceProvider>(
+                      builder: (context, provider, _) => _buildControls(provider),
                     ),
                   ),
                 ),
               ),
-            ],
-          );
-        },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -558,31 +652,32 @@ class _MapScreenState extends State<MapScreen> {
   Widget _buildRadiusSlider(GeofenceProvider provider) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12.0),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: AppColors.surface.withOpacity(0.7),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: AppColors.border.withOpacity(0.3), width: 1.5),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColors.surface.withOpacity(0.95),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppColors.border.withOpacity(0.5), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            )
+          ],
+        ),
+        child: Column(
+          children: [
+            Text("Radius: ${provider.currentRadius.toInt()}m", style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
+            Slider(
+              value: provider.currentRadius,
+              min: 50,
+              max: 1000,
+              activeColor: AppColors.secondary,
+              inactiveColor: AppColors.secondary.withOpacity(0.3),
+              onChanged: (val) => provider.setRadius(val),
             ),
-            child: Column(
-              children: [
-                Text("Radius: ${provider.currentRadius.toInt()}m", style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
-                Slider(
-                  value: provider.currentRadius,
-                  min: 50,
-                  max: 1000,
-                  activeColor: AppColors.secondary,
-                  inactiveColor: AppColors.secondary.withOpacity(0.3),
-                  onChanged: (val) => provider.setRadius(val),
-                ),
-              ],
-            ),
-          ),
+          ],
         ),
       ),
     );
@@ -596,50 +691,51 @@ class _MapScreenState extends State<MapScreen> {
         final prefs = snapshot.data!;
         bool isOverride = prefs.getBool('emergency_override') ?? false;
 
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(30),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppColors.surface.withOpacity(0.7),
-                borderRadius: BorderRadius.circular(30),
-                border: Border.all(color: AppColors.border.withOpacity(0.3), width: 1.5),
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: AppColors.surface.withOpacity(0.95),
+            borderRadius: BorderRadius.circular(30),
+            border: Border.all(color: AppColors.border.withOpacity(0.5), width: 1.5),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              )
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isOverride ? Icons.warning_amber_rounded : Icons.shield_rounded,
+                color: isOverride ? Colors.redAccent : AppColors.textSecondary,
+                size: 20,
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    isOverride ? Icons.warning_amber_rounded : Icons.shield_rounded,
-                    color: isOverride ? Colors.redAccent : AppColors.textSecondary,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Emergency Override',
-                    style: TextStyle(
-                      color: isOverride ? AppColors.textPrimary : AppColors.textSecondary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    height: 24, // Compact switch
-                    child: Switch(
-                      value: isOverride,
-                      onChanged: (val) async {
-                        await prefs.setBool('emergency_override', val);
-                        setState(() {});
-                      },
-                      activeTrackColor: Colors.redAccent.withOpacity(0.3),
-                      activeColor: Colors.redAccent,
-                    ),
-                  ),
-                ],
+              const SizedBox(width: 8),
+              Text(
+                'Emergency Override',
+                style: TextStyle(
+                  color: isOverride ? AppColors.textPrimary : AppColors.textSecondary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
               ),
-            ),
+              const SizedBox(width: 8),
+              SizedBox(
+                height: 24, // Compact switch
+                child: Switch(
+                  value: isOverride,
+                  onChanged: (val) async {
+                    await prefs.setBool('emergency_override', val);
+                    setState(() {});
+                  },
+                  activeTrackColor: Colors.redAccent.withOpacity(0.3),
+                  activeColor: Colors.redAccent,
+                ),
+              ),
+            ],
           ),
         );
       },
@@ -647,30 +743,24 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Widget _buildZoomButton(IconData icon, VoidCallback onPressed) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          decoration: BoxDecoration(
-            color: AppColors.surface.withOpacity(0.7),
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.border.withOpacity(0.3), width: 1.5),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 6,
-                offset: const Offset(0, 3),
-              )
-            ],
-          ),
-          child: IconButton(
-            icon: Icon(icon, color: AppColors.primary, size: 22), 
-            onPressed: onPressed,
-            constraints: const BoxConstraints.tightFor(width: 48, height: 48),
-            padding: EdgeInsets.zero,
-          ),
-        ),
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface.withOpacity(0.95),
+        shape: BoxShape.circle,
+        border: Border.all(color: AppColors.border.withOpacity(0.5), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          )
+        ],
+      ),
+      child: IconButton(
+        icon: Icon(icon, color: AppColors.primary, size: 22), 
+        onPressed: onPressed,
+        constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+        padding: EdgeInsets.zero,
       ),
     );
   }
